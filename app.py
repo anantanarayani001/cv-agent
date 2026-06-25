@@ -300,8 +300,10 @@ Example: ["IIT JEE Rank 245", "Ex-McKinsey Intern", "Student Council VP", "State
 
 
 def build_chat_queue(data: dict) -> list:
-    """Return ordered list of (field_key, question) for missing fields."""
+    """Return ordered list of (field_key, question) covering ALL CV sections."""
     q = []
+
+    # ── Basic info ────────────────────────────────────────────────────────────
     if not data.get("name"):
         q.append(("name", "What is your **full name**? (e.g. Arya Narayani — first and last name only)"))
     if not data.get("gender"):
@@ -310,17 +312,71 @@ def build_chat_queue(data: dict) -> list:
         q.append(("dob", "What is your **date of birth**? (format: YYYY-MM-DD, e.g. 1998-09-27)"))
     if not data.get("degree_line"):
         q.append(("degree_line", "What should appear as your **degree line** under your name? (e.g. MBA-HR | 2021-23  or  B.Tech CSE | 2018-22)"))
+
+    # ── Academic profile ──────────────────────────────────────────────────────
     if not data.get("academic_profile"):
         q.append(("ap_note", "I couldn't find your qualifications. Please list them, one per line:\n`Degree | Institution | Score | Year`\ne.g.:\n`MBA-HR | Sri Balaji University, Pune | 7.8/10 | 2021-23`\n`BBA | ISBM, Pune (University of Pune) | 68% | 2017-20`"))
-    # Spike points always asked
+
+    # ── Spike points ──────────────────────────────────────────────────────────
     q.append(("spike_points", "SPIKE_GENERATION"))
+
+    # ── Academic achievements — always ask ────────────────────────────────────
+    aa = data.get("academic_achievements", {})
+    aa_count = len(aa.get("academic", []) + aa.get("competitions", []) + aa.get("scholarships", []))
+    q.append(("aa_academic", (
+        f"I found {aa_count} academic achievement(s) in your CV. " if aa_count else "I didn't find any academic achievements. "
+    ) + "Do you have any **academic prizes, ranks, or merit certificates**? "
+      "List them one per line with year at end, or type **'none'** to skip.\n\n"
+      "_e.g._ `Ranked Top 10 in State in Class XII CBSE | 2020`"))
+
+    q.append(("aa_competitions", (
+        "Any **competitions, case studies, hackathons, or B-school events** you've won or participated in? "
+        "One per line with year, or type **'none'** to skip.\n\n"
+        "_e.g._ `National Finalist at XYZ Case Competition among 4,000+ participants | 2023`"
+    )))
+
+    q.append(("aa_scholarships", (
+        "Any **scholarships or financial awards**? One per line with year, or type **'none'** to skip.\n\n"
+        "_e.g._ `Awarded INR 0.5 mn by Mirae Asset Foundation for holistic excellence | 2024`"
+    )))
+
+    # ── POR — always ask ──────────────────────────────────────────────────────
+    por_count = len(data.get("positions_of_responsibility", []))
+    q.append(("por_extra", (
+        f"I found {por_count} position(s) of responsibility. " if por_count else "I didn't find any positions of responsibility. "
+    ) + "Any **additional roles** — college clubs, societies, student council, sports captain, NGO, etc.? "
+      "One per line in format: `Organization | Role | Year`, or type **'none'** to skip.\n\n"
+      "_e.g._ `Ramjas College | Vice President, Zoological Society | 2022`"))
+
+    # ── CIP — always ask ─────────────────────────────────────────────────────
+    cip = data.get("cip", {})
+    cip_count = sum(len(cip.get(k, [])) for k in ("certifications", "internships", "projects"))
+    q.append(("cip_extra", (
+        f"I found {cip_count} certification/internship/project(s). " if cip_count else "I didn't find any certifications, internships, or projects. "
+    ) + "Any **additional ones** to add? One per line: `Organization | Title | Duration`, or type **'none'** to skip.\n\n"
+      "_e.g._ `Coursera | Google Data Analytics Certificate | 2023`\n"
+      "_e.g._ `Self | E-Commerce Startup — built and sold 3,000+ units | 2022`"))
+
+    # ── ECA — always ask ─────────────────────────────────────────────────────
     eca = data.get("eca", {})
+    eca_count = sum(len(v) for v in eca.values())
+    q.append(("eca_extra", (
+        f"I found {eca_count} extracurricular activity(ies). " if eca_count else "I didn't find any extracurriculars. "
+    ) + "Any **sports, debate, cultural, social service, literature, or technical activities**? "
+      "One per line: `Category | Achievement | Year`, or type **'none'** to skip.\n\n"
+      "_e.g._ `Sports | Secured Gold in Volleyball at Inter-College Tournament | 2022`\n"
+      "_e.g._ `Social Service | Raised INR 50,000 for 70+ underprivileged children via Enactus | 2021`"))
+
+    # ── Hobbies ───────────────────────────────────────────────────────────────
     has_hobbies = any("hobbies" in str(p).lower() for p in eca.get("Others", []))
     if not has_hobbies:
-        q.append(("hobbies", "What are your **hobbies**? (These go on the last line of your CV, e.g. Playing Volleyball, Reading, Chess)"))
+        q.append(("hobbies", "What are your **hobbies**? (Last line of CV, e.g. Watching Anime, Reading Fiction, Playing Volleyball)"))
+
+    # ── Contact ───────────────────────────────────────────────────────────────
     if not data.get("linkedin") and not data.get("email"):
-        q.append(("linkedin", "What is your **LinkedIn URL**? (e.g. https://linkedin.com/in/yourhandle) — type 'skip' to leave blank"))
+        q.append(("linkedin", "What is your **LinkedIn URL**? — type 'skip' to leave blank"))
         q.append(("email", "What is your **email address**? — type 'skip' to leave blank"))
+
     return q
 
 
@@ -354,6 +410,83 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
     elif field_key == "spike_points":
         spikes = [s.strip() for s in answer.splitlines() if s.strip()]
         data["spike_points"] = spikes[:4]
+
+    elif field_key == "aa_academic":
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        if lines:
+            aa = data.setdefault("academic_achievements", {})
+            existing = aa.get("academic", [])
+            for line in lines:
+                parts = [p.strip() for p in line.rsplit("|", 1)]
+                text = parts[0]
+                year = parts[1] if len(parts) > 1 else ""
+                existing.append({"text": text, "year": year})
+            aa["academic"] = existing
+
+    elif field_key == "aa_competitions":
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        if lines:
+            aa = data.setdefault("academic_achievements", {})
+            existing = aa.get("competitions", [])
+            for line in lines:
+                parts = [p.strip() for p in line.rsplit("|", 1)]
+                text = parts[0]
+                year = parts[1] if len(parts) > 1 else ""
+                existing.append({"text": text, "year": year})
+            aa["competitions"] = existing
+
+    elif field_key == "aa_scholarships":
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        if lines:
+            aa = data.setdefault("academic_achievements", {})
+            existing = aa.get("scholarships", [])
+            for line in lines:
+                parts = [p.strip() for p in line.rsplit("|", 1)]
+                text = parts[0]
+                year = parts[1] if len(parts) > 1 else ""
+                existing.append({"text": text, "year": year})
+            aa["scholarships"] = existing
+
+    elif field_key == "por_extra":
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        if lines:
+            por = data.setdefault("positions_of_responsibility", [])
+            for line in lines:
+                parts = [p.strip() for p in line.split("|")]
+                por.append({
+                    "organization": parts[0] if len(parts) > 0 else "",
+                    "role": parts[1] if len(parts) > 1 else "",
+                    "year": parts[2] if len(parts) > 2 else "",
+                    "bullets": [],
+                })
+
+    elif field_key == "cip_extra":
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        if lines:
+            cip = data.setdefault("cip", {})
+            projects = cip.get("projects", [])
+            for line in lines:
+                parts = [p.strip() for p in line.split("|")]
+                projects.append({
+                    "organization": parts[0] if len(parts) > 0 else "",
+                    "title": parts[1] if len(parts) > 1 else line,
+                    "duration": parts[2] if len(parts) > 2 else "",
+                    "bullets": [],
+                })
+            cip["projects"] = projects
+
+    elif field_key == "eca_extra":
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        if lines:
+            eca = data.setdefault("eca", {})
+            for line in lines:
+                parts = [p.strip() for p in line.split("|")]
+                cat = parts[0] if len(parts) > 0 else "Others"
+                text = parts[1] if len(parts) > 1 else line
+                year = parts[2] if len(parts) > 2 else ""
+                bucket = eca.setdefault(cat, [])
+                bucket.append({"text": text, "year": year})
+
     elif field_key == "hobbies":
         eca = data.get("eca", {})
         eca["Others"] = [{"text": f"Hobbies: {answer}", "year": ""}]
