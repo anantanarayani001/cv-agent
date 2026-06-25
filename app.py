@@ -162,11 +162,22 @@ def extract_text(uploaded_file) -> str:
 def parse_cv_with_gemini(raw_text: str, api_key: str) -> dict:
     """Send raw CV text to Gemini and get structured JSON back."""
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    # Try models in order until one works
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-8b']
     prompt = PARSE_PROMPT.replace("{cv_text}", raw_text[:12000])
-
-    response = model.generate_content(prompt)
-    content = response.text
+    content = None
+    last_error = None
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            content = response.text
+            break
+        except Exception as e:
+            last_error = e
+            continue
+    if content is None:
+        raise last_error
 
     # Extract JSON block
     match = re.search(r"\{[\s\S]*\}", content)
