@@ -117,7 +117,7 @@ def get_api_key() -> str:
     """Get API key from env var, Streamlit secrets, or session state."""
     # Render / any host: use environment variable
     import os
-    env_key = os.environ.get("GEMINI_API_KEY", "")
+    env_key = os.environ.get("GROQ_API_KEY", "")
     if env_key:
         return env_key
     # Streamlit Cloud: use secrets
@@ -159,37 +159,20 @@ def extract_text(uploaded_file) -> str:
         os.unlink(tmp_path)
 
 
-def _get_available_model(api_key: str) -> tuple:
-    """Return (api_version, model_name) for the first usable Gemini flash model."""
-    candidates = [
-        ("v1beta", "gemini-2.0-flash"),
-        ("v1beta", "gemini-2.0-flash-lite"),
-        ("v1beta", "gemini-1.5-flash"),
-        ("v1beta", "gemini-1.5-flash-latest"),
-        ("v1",     "gemini-1.5-flash"),
-        ("v1beta", "gemini-pro"),
-        ("v1",     "gemini-pro"),
-    ]
-    for ver, model in candidates:
-        url = f"https://generativelanguage.googleapis.com/{ver}/models/{model}?key={api_key}"
-        try:
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                return ver, model
-        except Exception:
-            continue
-    raise RuntimeError("No Gemini model found for this API key. Check your key at aistudio.google.com/apikey")
-
-
 def parse_cv_with_gemini(raw_text: str, api_key: str) -> dict:
-    """Send raw CV text to Gemini REST API and get structured JSON back."""
+    """Send raw CV text to Groq API and get structured JSON back."""
     prompt = PARSE_PROMPT.replace("{cv_text}", raw_text[:12000])
-    ver, model = _get_available_model(api_key)
-    url = f"https://generativelanguage.googleapis.com/{ver}/models/{model}:generateContent?key={api_key}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    resp = requests.post(url, json=payload, timeout=60)
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.1,
+    }
+    resp = requests.post(url, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
-    content = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    content = resp.json()["choices"][0]["message"]["content"]
 
     # Extract JSON block
     match = re.search(r"\{[\s\S]*\}", content)
@@ -282,18 +265,18 @@ def sidebar():
         import os
         _has_key = bool(os.environ.get("GEMINI_API_KEY")) or bool(get_api_key())
         if not _has_key:
-            st.markdown("**Google Gemini API Key**")
+            st.markdown("**Groq API Key**")
             key = st.text_input(
-                "Enter your Google AI Studio key",
+                "Enter your Groq API key",
                 type="password",
                 value=st.session_state.api_key,
-                placeholder="AIza...",
-                help="Get a free key at aistudio.google.com",
+                placeholder="gsk_...",
+                help="Get a free key at console.groq.com",
             )
             st.session_state.api_key = key
             if not key:
                 st.warning("🔑 API key required to process CVs")
-                st.markdown("[Get a free API key →](https://aistudio.google.com/)")
+                st.markdown("[Get a free API key →](https://console.groq.com/)")
         else:
             st.success("✅ API key configured")
 
