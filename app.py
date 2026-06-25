@@ -159,10 +159,33 @@ def extract_text(uploaded_file) -> str:
         os.unlink(tmp_path)
 
 
+def _get_available_model(api_key: str) -> tuple:
+    """Return (api_version, model_name) for the first usable Gemini flash model."""
+    candidates = [
+        ("v1beta", "gemini-2.0-flash"),
+        ("v1beta", "gemini-2.0-flash-lite"),
+        ("v1beta", "gemini-1.5-flash"),
+        ("v1beta", "gemini-1.5-flash-latest"),
+        ("v1",     "gemini-1.5-flash"),
+        ("v1beta", "gemini-pro"),
+        ("v1",     "gemini-pro"),
+    ]
+    for ver, model in candidates:
+        url = f"https://generativelanguage.googleapis.com/{ver}/models/{model}?key={api_key}"
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                return ver, model
+        except Exception:
+            continue
+    raise RuntimeError("No Gemini model found for this API key. Check your key at aistudio.google.com/apikey")
+
+
 def parse_cv_with_gemini(raw_text: str, api_key: str) -> dict:
     """Send raw CV text to Gemini REST API and get structured JSON back."""
     prompt = PARSE_PROMPT.replace("{cv_text}", raw_text[:12000])
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    ver, model = _get_available_model(api_key)
+    url = f"https://generativelanguage.googleapis.com/{ver}/models/{model}:generateContent?key={api_key}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     resp = requests.post(url, json=payload, timeout=60)
     resp.raise_for_status()
