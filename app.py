@@ -303,9 +303,14 @@ def build_chat_queue(data: dict) -> list:
     """Return ordered list of (field_key, question) covering ALL CV sections."""
     q = []
 
-    # ── Basic info ────────────────────────────────────────────────────────────
-    if not data.get("name"):
+    # ── Name — ALWAYS confirm (parsing often gets it wrong) ───────────────────
+    parsed_name = data.get("name", "")
+    if parsed_name:
+        q.append(("name", f"I read your name as **{parsed_name}**. Is that correct?\nType **'yes'** to confirm, or type your correct full name."))
+    else:
         q.append(("name", "What is your **full name**? (e.g. Arya Narayani — first and last name only)"))
+
+    # ── Other basic info ──────────────────────────────────────────────────────
     if not data.get("gender"):
         q.append(("gender", "What is your **gender**? (Male / Female / Non-binary / Prefer not to say)"))
     if not data.get("dob"):
@@ -372,22 +377,37 @@ def build_chat_queue(data: dict) -> list:
     if not has_hobbies:
         q.append(("hobbies", "What are your **hobbies**? (Last line of CV, e.g. Watching Anime, Reading Fiction, Playing Volleyball)"))
 
-    # ── Contact ───────────────────────────────────────────────────────────────
-    if not data.get("linkedin") and not data.get("email"):
-        q.append(("linkedin", "What is your **LinkedIn URL**? — type 'skip' to leave blank"))
-        q.append(("email", "What is your **email address**? — type 'skip' to leave blank"))
+    # ── Contact — ALWAYS ask to confirm or add ───────────────────────────────
+    parsed_li = data.get("linkedin", "")
+    if parsed_li:
+        q.append(("linkedin", f"I found your LinkedIn as **{parsed_li}**. Type **'yes'** to keep it, or paste the correct URL."))
+    else:
+        q.append(("linkedin", "What is your **LinkedIn URL**? (e.g. https://linkedin.com/in/yourhandle) — type **'skip'** to leave blank"))
+
+    parsed_email = data.get("email", "")
+    if parsed_email:
+        q.append(("email", f"I found your email as **{parsed_email}**. Type **'yes'** to keep it, or type the correct email."))
+    else:
+        q.append(("email", "What is your **email address**? — type **'skip'** to leave blank"))
 
     return q
 
 
+_SKIP_WORDS = {"skip", "none", "no", "n/a", "na", "nil", "-", "nope", "nothing"}
+
 def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
     """Update cv_data based on user's chat answer."""
     answer = answer.strip()
-    if answer.lower() == "skip":
+    answer_lower = answer.lower()
+
+    # Global skip for all content fields
+    if answer_lower in _SKIP_WORDS and field_key not in ("name", "linkedin", "email", "gender", "dob", "degree_line"):
         return data
 
     if field_key == "name":
-        data["name"] = answer
+        # "yes" / "correct" / "right" = keep parsed name
+        if answer_lower not in ("yes", "y", "correct", "right", "ok", "okay", "yep", "yup"):
+            data["name"] = answer
     elif field_key == "gender":
         data["gender"] = answer
     elif field_key == "dob":
@@ -412,7 +432,7 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
         data["spike_points"] = spikes[:4]
 
     elif field_key == "aa_academic":
-        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() not in _SKIP_WORDS]
         if lines:
             aa = data.setdefault("academic_achievements", {})
             existing = aa.get("academic", [])
@@ -424,7 +444,7 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
             aa["academic"] = existing
 
     elif field_key == "aa_competitions":
-        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() not in _SKIP_WORDS]
         if lines:
             aa = data.setdefault("academic_achievements", {})
             existing = aa.get("competitions", [])
@@ -436,7 +456,7 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
             aa["competitions"] = existing
 
     elif field_key == "aa_scholarships":
-        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() not in _SKIP_WORDS]
         if lines:
             aa = data.setdefault("academic_achievements", {})
             existing = aa.get("scholarships", [])
@@ -448,7 +468,7 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
             aa["scholarships"] = existing
 
     elif field_key == "por_extra":
-        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() not in _SKIP_WORDS]
         if lines:
             por = data.setdefault("positions_of_responsibility", [])
             for line in lines:
@@ -461,7 +481,7 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
                 })
 
     elif field_key == "cip_extra":
-        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() not in _SKIP_WORDS]
         if lines:
             cip = data.setdefault("cip", {})
             projects = cip.get("projects", [])
@@ -476,7 +496,7 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
             cip["projects"] = projects
 
     elif field_key == "eca_extra":
-        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() != "none"]
+        lines = [l.strip() for l in answer.splitlines() if l.strip() and l.strip().lower() not in _SKIP_WORDS]
         if lines:
             eca = data.setdefault("eca", {})
             for line in lines:
@@ -492,9 +512,17 @@ def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
         eca["Others"] = [{"text": f"Hobbies: {answer}", "year": ""}]
         data["eca"] = eca
     elif field_key == "linkedin":
-        data["linkedin"] = answer
+        if answer_lower in _SKIP_WORDS:
+            data.pop("linkedin", None)
+        elif answer_lower not in ("yes", "y", "correct", "ok", "okay"):
+            data["linkedin"] = answer
+        # "yes" = keep existing parsed value
     elif field_key == "email":
-        data["email"] = answer
+        if answer_lower in _SKIP_WORDS:
+            data.pop("email", None)
+        elif answer_lower not in ("yes", "y", "correct", "ok", "okay"):
+            data["email"] = answer
+        # "yes" = keep existing parsed value
     return data
 
 
