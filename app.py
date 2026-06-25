@@ -114,9 +114,18 @@ Return ONLY the improved single-line bullet. No explanation."""
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def get_api_key() -> str:
-    """Get API key from Streamlit secrets or session state."""
-    if "GEMINI_API_KEY" in st.secrets:
-        return st.secrets["GEMINI_API_KEY"]
+    """Get API key from env var, Streamlit secrets, or session state."""
+    # Render / any host: use environment variable
+    import os
+    env_key = os.environ.get("GEMINI_API_KEY", "")
+    if env_key:
+        return env_key
+    # Streamlit Cloud: use secrets
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
     return st.session_state.get("api_key", "")
 
 
@@ -246,8 +255,10 @@ def sidebar():
     with st.sidebar:
         st.title("⚙️ Settings")
 
-        # API key (only show if not in secrets)
-        if "GEMINI_API_KEY" not in st.secrets:
+        # API key (only show if not already configured via env/secrets)
+        import os
+        _has_key = bool(os.environ.get("GEMINI_API_KEY")) or bool(get_api_key())
+        if not _has_key:
             st.markdown("**Google Gemini API Key**")
             key = st.text_input(
                 "Enter your Google AI Studio key",
