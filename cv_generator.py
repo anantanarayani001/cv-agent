@@ -20,15 +20,18 @@ C_WHITE = colors.white
 C_LGRAY = colors.HexColor('#F0F0F0')
 C_LINK  = colors.HexColor('#0000CC')
 
-FS_NAME  = 14.5
-FS_SPIKE = 7.5
-FS_SEC   = 7.0
-FS_BODY  = 6.8
-FS_SMALL = 6.2
+FS_NAME  = 16.0
+FS_SPIKE = 9.0
+FS_SEC   = 8.5
+FS_BODY  = 9.0
+FS_SMALL = 8.0
 
-H_SEC  = 11.5
-H_ROW  = 10.0
-H_GAP  = 2.5
+H_SEC  = 13.0
+H_ROW  = 12.5
+H_GAP  = 3.5
+
+FONT_REG  = 'Times-Roman'
+FONT_BOLD = 'Times-Bold'
 
 BULLET = u'■ '
 DASH   = u'– '
@@ -71,10 +74,10 @@ class CV:
         self.c = rc.Canvas(out_path, pagesize=A4)
         self.y = PH - MT
 
-    def sw(self, t, font='Helvetica', size=FS_BODY):
+    def sw(self, t, font=FONT_REG, size=FS_BODY):
         return self.c.stringWidth(t, font, size)
 
-    def txt(self, x, y, t, font='Helvetica', size=FS_BODY, color=C_BLACK, align='left'):
+    def txt(self, x, y, t, font=FONT_REG, size=FS_BODY, color=C_BLACK, align='left'):
         self.c.setFont(font, size)
         self.c.setFillColor(color)
         {'left': self.c.drawString, 'right': self.c.drawRightString, 'center': self.c.drawCentredString}[align](x, y, t)
@@ -94,7 +97,7 @@ class CV:
     def lspaced(self, text, gap=1):
         return (' ' * gap).join(text)
 
-    def wrap(self, text, max_w, font='Helvetica', size=FS_BODY):
+    def wrap(self, text, max_w, font=FONT_REG, size=FS_BODY):
         words = text.split()
         lines, cur = [], ''
         for w in words:
@@ -111,8 +114,8 @@ class CV:
 
     def bullet(self, x, text, sub=False, year=''):
         b = DASH if sub else BULLET
-        bw = self.sw(b, 'Helvetica', FS_BODY)
-        yr_w = (self.sw(year, 'Helvetica', FS_BODY) + 4) if year else 0
+        bw = self.sw(b, 'Times-Roman', FS_BODY)
+        yr_w = (self.sw(year, 'Times-Roman', FS_BODY) + 4) if year else 0
         avail = (PW - MR) - x - bw - yr_w
         text = apply_fmt(text)
         lines = self.wrap(text, avail)
@@ -134,11 +137,11 @@ class CV:
         self.box(ML, self.y - H_SEC + 2, CW, H_SEC)
         ty = self.y - H_SEC + 4.0
         self.txt(ML + 2 * mm, ty, self.lspaced(title.upper(), 1),
-                 font='Helvetica-Bold', size=FS_SEC, color=C_WHITE)
+                 font='Times-Bold', size=FS_SEC, color=C_WHITE)
         self.advance(H_SEC + 1)
 
     def draw_label(self, text):
-        self.txt(ML + 1 * mm, self.y - 2.0, text, font='Helvetica-Bold', size=FS_SMALL)
+        self.txt(ML + 1 * mm, self.y - 2.0, text, font='Times-Bold', size=FS_SMALL)
 
     def xc(self):
         return ML + LW
@@ -151,7 +154,7 @@ class CV:
         degree_line = d.get('degree_line', '')
 
         name_y = self.y - 4
-        self.txt(ML, name_y, self.lspaced(name, 1), font='Helvetica-Bold', size=FS_NAME)
+        self.txt(ML, name_y, self.lspaced(name, 1), font='Times-Bold', size=FS_NAME)
 
         gd = (gender + ' , ' + dob) if gender and dob else (gender or dob)
         if gd:
@@ -171,7 +174,7 @@ class CV:
         self.box(ML, self.y - H_SEC + 2, CW, H_SEC)
         ty = self.y - H_SEC + 4.5
         line = '   |   '.join(s.strip() for s in spikes[:4])
-        self.txt(ML + CW / 2, ty, line, font='Helvetica-Bold', size=FS_SPIKE, color=C_WHITE, align='center')
+        self.txt(ML + CW / 2, ty, line, font='Times-Bold', size=FS_SPIKE, color=C_WHITE, align='center')
         self.advance(H_SEC + 2)
 
     def draw_academic_profile(self):
@@ -202,10 +205,10 @@ class CV:
         self.section('WORK EXPERIENCE')
         for exp in items:
             ty = self.y - 2.0
-            self.txt(ML + 1 * mm, ty, exp.get('company', ''), font='Helvetica-Bold', size=FS_BODY)
-            self.txt(self.xc() + 1 * mm, ty, exp.get('role', ''), font='Helvetica-Bold', size=FS_BODY)
+            self.txt(ML + 1 * mm, ty, exp.get('company', ''), font='Times-Bold', size=FS_BODY)
+            self.txt(self.xc() + 1 * mm, ty, exp.get('role', ''), font='Times-Bold', size=FS_BODY)
             if exp.get('duration'):
-                self.txt(PW - MR, ty, exp['duration'], font='Helvetica-Bold', size=FS_BODY, align='right')
+                self.txt(PW - MR, ty, exp['duration'], font='Times-Bold', size=FS_BODY, align='right')
             self.advance(H_ROW)
             for sec_key, sec_label in [('responsibilities', 'Roles & Resp.'), ('initiatives', 'Initiatives'), ('achievements', 'Achievements')]:
                 pts = exp.get(sec_key, [])
@@ -244,11 +247,11 @@ class CV:
         self.section('POSITIONS OF RESPONSIBILITY')
         for e in por:
             ty = self.y - 2.0
-            self.txt(ML + 1 * mm, ty, e.get('organization', ''), font='Helvetica-Bold', size=FS_BODY)
-            self.txt(self.xc() + 1 * mm, ty, e.get('role', ''), font='Helvetica-Bold', size=FS_BODY)
+            self.txt(ML + 1 * mm, ty, e.get('organization', ''), font='Times-Bold', size=FS_BODY)
+            self.txt(self.xc() + 1 * mm, ty, e.get('role', ''), font='Times-Bold', size=FS_BODY)
             year = str(e.get('year', ''))
             if year:
-                self.txt(PW - MR, ty, year, font='Helvetica-Bold', size=FS_BODY, align='right')
+                self.txt(PW - MR, ty, year, font='Times-Bold', size=FS_BODY, align='right')
             self.advance(H_ROW)
             for pt in e.get('bullets', []):
                 self.bullet(self.xc(), pt, sub=True)
@@ -266,10 +269,10 @@ class CV:
         self.section('CERTIFICATIONS, INTERNSHIPS & PROJECTS')
         for e in all_entries:
             ty = self.y - 2.0
-            self.txt(ML + 1 * mm, ty, e.get('organization', ''), font='Helvetica-Bold', size=FS_BODY)
-            self.txt(self.xc() + 1 * mm, ty, e.get('title', ''), font='Helvetica-Bold', size=FS_BODY)
+            self.txt(ML + 1 * mm, ty, e.get('organization', ''), font='Times-Bold', size=FS_BODY)
+            self.txt(self.xc() + 1 * mm, ty, e.get('title', ''), font='Times-Bold', size=FS_BODY)
             if e.get('duration'):
-                self.txt(PW - MR, ty, e['duration'], font='Helvetica-Bold', size=FS_BODY, align='right')
+                self.txt(PW - MR, ty, e['duration'], font='Times-Bold', size=FS_BODY, align='right')
             self.advance(H_ROW)
             for pt in e.get('bullets', []):
                 self.bullet(self.xc(), pt, sub=True)
@@ -301,7 +304,7 @@ class CV:
         parts = [p for p in [d.get('linkedin'), d.get('email'), d.get('phone')] if p]
         if not parts:
             return
-        self.c.setFont('Helvetica', FS_SMALL)
+        self.c.setFont('Times-Roman', FS_SMALL)
         self.c.setFillColor(C_LINK)
         self.c.drawCentredString(ML + CW / 2, MB + 2, '   |   '.join(parts))
 

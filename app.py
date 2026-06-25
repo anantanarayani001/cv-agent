@@ -244,15 +244,125 @@ def generate_docx(data: dict) -> bytes:
 
 def init_state():
     defaults = {
-        "stage": "upload",   # upload → review → download
+        "stage": "upload",      # upload → chat → download
         "raw_text": "",
         "cv_data": {},
         "api_key": "",
         "filename": "",
+        "chat_messages": [],    # [{role, content}]
+        "chat_queue": [],       # [(field_key, question)]
+        "chat_done": False,
+        "spike_suggestions": [],
+        "awaiting_spike_choice": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+# ── CHAT HELPERS ─────────────────────────────────────────────────────────────
+
+def suggest_spike_points(data: dict, api_key: str) -> list:
+    """Ask AI to suggest 4 spike points based on parsed CV."""
+    summary = json.dumps({k: v for k, v in data.items() if k != "eca"}, indent=2)[:3000]
+    prompt = f"""Based on this CV, suggest exactly 4 spike points for the header bar.
+
+Rules:
+- 2-4 words each, Pascal Case (e.g. "National Rank 2", "Ex-Deloitte Analyst")
+- Cover 4 different areas: academics, work/internships, positions of responsibility, ECA or skills
+- Be specific — use company names, ranks, numbers where possible
+- These are the person's top 4 career highlights at a glance
+
+CV data:
+{summary}
+
+Return ONLY a JSON array of exactly 4 strings. No explanation.
+Example: ["IIT JEE Rank 245", "Ex-McKinsey Intern", "Student Council VP", "State-Level Swimmer"]"""
+
+    try:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 200,
+            "temperature": 0.3,
+        }
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        text = resp.json()["choices"][0]["message"]["content"]
+        match = re.search(r'\[.*?\]', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+    except Exception:
+        pass
+    return []
+
+
+def build_chat_queue(data: dict) -> list:
+    """Return ordered list of (field_key, question) for missing fields."""
+    q = []
+    if not data.get("name"):
+        q.append(("name", "What is your **full name**? (e.g. Arya Narayani — first and last name only)"))
+    if not data.get("gender"):
+        q.append(("gender", "What is your **gender**? (Male / Female / Non-binary / Prefer not to say)"))
+    if not data.get("dob"):
+        q.append(("dob", "What is your **date of birth**? (format: YYYY-MM-DD, e.g. 1998-09-27)"))
+    if not data.get("degree_line"):
+        q.append(("degree_line", "What should appear as your **degree line** under your name? (e.g. MBA-HR | 2021-23  or  B.Tech CSE | 2018-22)"))
+    if not data.get("academic_profile"):
+        q.append(("ap_note", "I couldn't find your qualifications. Please list them, one per line:\n`Degree | Institution | Score | Year`\ne.g.:\n`MBA-HR | Sri Balaji University, Pune | 7.8/10 | 2021-23`\n`BBA | ISBM, Pune (University of Pune) | 68% | 2017-20`"))
+    # Spike points always asked
+    q.append(("spike_points", "SPIKE_GENERATION"))
+    eca = data.get("eca", {})
+    has_hobbies = any("hobbies" in str(p).lower() for p in eca.get("Others", []))
+    if not has_hobbies:
+        q.append(("hobbies", "What are your **hobbies**? (These go on the last line of your CV, e.g. Playing Volleyball, Reading, Chess)"))
+    if not data.get("linkedin") and not data.get("email"):
+        q.append(("linkedin", "What is your **LinkedIn URL**? (e.g. https://linkedin.com/in/yourhandle) — type 'skip' to leave blank"))
+        q.append(("email", "What is your **email address**? — type 'skip' to leave blank"))
+    return q
+
+
+def apply_chat_answer(field_key: str, answer: str, data: dict) -> dict:
+    """Update cv_data based on user's chat answer."""
+    answer = answer.strip()
+    if answer.lower() == "skip":
+        return data
+
+    if field_key == "name":
+        data["name"] = answer
+    elif field_key == "gender":
+        data["gender"] = answer
+    elif field_key == "dob":
+        data["dob"] = answer
+    elif field_key == "degree_line":
+        data["degree_line"] = answer
+    elif field_key == "ap_note":
+        entries = []
+        for line in answer.splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 2:
+                entries.append({
+                    "degree": parts[0] if len(parts) > 0 else "",
+                    "institution": parts[1] if len(parts) > 1 else "",
+                    "score": parts[2] if len(parts) > 2 else "",
+                    "year": parts[3] if len(parts) > 3 else "",
+                })
+        if entries:
+            data["academic_profile"] = entries
+    elif field_key == "spike_points":
+        spikes = [s.strip() for s in answer.splitlines() if s.strip()]
+        data["spike_points"] = spikes[:4]
+    elif field_key == "hobbies":
+        eca = data.get("eca", {})
+        eca["Others"] = [{"text": f"Hobbies: {answer}", "year": ""}]
+        data["eca"] = eca
+    elif field_key == "linkedin":
+        data["linkedin"] = answer
+    elif field_key == "email":
+        data["email"] = answer
+    return data
 
 
 # ── SIDEBAR ──────────────────────────────────────────────────────────────────
@@ -296,8 +406,9 @@ def sidebar():
         if st.session_state.stage != "upload":
             st.divider()
             if st.button("🔄 Start Over", use_container_width=True):
-                for k in ["stage", "raw_text", "cv_data", "filename"]:
-                    st.session_state[k] = "" if isinstance(st.session_state[k], str) else {} if isinstance(st.session_state[k], dict) else "upload"
+                for k in ["stage", "raw_text", "cv_data", "filename", "chat_messages",
+                          "chat_queue", "chat_done", "spike_suggestions", "awaiting_spike_choice"]:
+                    st.session_state.pop(k, None)
                 st.session_state.stage = "upload"
                 st.rerun()
 
@@ -349,7 +460,7 @@ def stage_upload():
                     return
 
                 st.session_state.cv_data = parsed
-                st.session_state.stage = "review"
+                st.session_state.stage = "chat"
                 st.rerun()
 
     with col2:
@@ -377,250 +488,152 @@ def stage_upload():
             "positions_of_responsibility": [], "cip": {"certifications": [], "internships": [], "projects": []},
             "eca": {}, "linkedin": "", "email": "", "phone": ""
         }
-        st.session_state.stage = "review"
+        st.session_state.stage = "chat"
         st.rerun()
 
 
-# ── STAGE 2: REVIEW ───────────────────────────────────────────────────────────
+# ── STAGE 2: CHAT ─────────────────────────────────────────────────────────────
 
-def stage_review():
-    st.title("✏️ Review & Complete Your CV")
+def stage_chat():
+    st.title("💬 Let's build your CV")
     if st.session_state.filename:
-        st.caption(f"Source file: {st.session_state.filename}")
+        st.caption(f"Source: {st.session_state.filename}")
 
     data = st.session_state.cv_data
-    missing = find_missing_fields(data)
+    api_key = get_api_key()
 
-    if missing:
-        st.warning(f"⚠️ {len(missing)} required field(s) need your input before generating.")
+    # ── Initialize chat on first entry ───────────────────────────────────────
+    if not st.session_state.chat_messages:
+        # Build welcome summary
+        name = data.get("name", "")
+        we_count = len(data.get("work_experience", []))
+        ap_count = len(data.get("academic_profile", []))
+        lines = [f"I've read your CV{' for ' + name if name else ''}. Here's what I found:"]
+        if ap_count: lines.append(f"✅ {ap_count} academic qualification(s)")
+        if we_count: lines.append(f"✅ {we_count} work experience(s)")
+        if data.get("linkedin"): lines.append(f"✅ LinkedIn profile")
+        lines.append("\nI'll ask you a few questions to fill in any gaps. Let's go!")
 
-    # ── Basic info ───────────────────────────────────────────────────────────
-    with st.expander("👤 Personal Details", expanded=bool(missing)):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            data["name"] = st.text_input(
-                "Full Name *",
-                value=data.get("name", ""),
-                placeholder="FirstName LastName",
-                help="Exactly 2 parts. If no surname, use 'NA'",
-            )
-        with c2:
-            data["gender"] = st.text_input(
-                "Gender *",
-                value=data.get("gender", ""),
-                placeholder="Female / Male / Non-binary",
-            )
-        with c3:
-            data["dob"] = st.text_input(
-                "Date of Birth *",
-                value=data.get("dob", ""),
-                placeholder="YYYY-MM-DD",
-            )
-        data["degree_line"] = st.text_input(
-            "Degree / Info line (shown under name)",
-            value=data.get("degree_line", ""),
-            placeholder="e.g. B.Tech CSE | 2018-22",
-        )
+        st.session_state.chat_messages = [{"role": "assistant", "content": "\n".join(lines)}]
+        queue = build_chat_queue(data)
+        st.session_state.chat_queue = queue
 
-    # ── Spike points ─────────────────────────────────────────────────────────
-    with st.expander("⚡ Spike Points (4 required)", expanded=len(data.get("spike_points", [])) < 4):
-        st.caption("Exactly 4 highlights, Pascal Case, max 3 words each. Cover: Academics | Work | Positions | ECA")
-        spikes = data.get("spike_points", ["", "", "", ""])
-        while len(spikes) < 4:
-            spikes.append("")
-        cols = st.columns(4)
-        for i, col in enumerate(cols):
-            with col:
-                spikes[i] = st.text_input(f"Spike {i+1} *", value=spikes[i], placeholder=["National Rank 2", "Google Intern", "Tech Council Head", "Gold Volleyball"][i])
-        data["spike_points"] = [s.strip() for s in spikes if s.strip()]
+        # Ask first question
+        if queue:
+            first_key, first_q = queue[0]
+            if first_q == "SPIKE_GENERATION":
+                _ask_spike_question(data, api_key)
+            else:
+                st.session_state.chat_messages.append({"role": "assistant", "content": first_q})
+        else:
+            st.session_state.chat_done = True
+            st.session_state.chat_messages.append({"role": "assistant", "content": "✅ Everything looks complete! Click **Generate CV** below."})
 
-    # ── Academic profile ─────────────────────────────────────────────────────
-    with st.expander("🎓 Academic Profile", expanded=not data.get("academic_profile")):
-        st.caption("List from most recent to oldest. Include postgrad (if any), graduation, Class XII, Class X.")
-        ap = data.get("academic_profile", [])
+    # ── Render all messages ───────────────────────────────────────────────────
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-        # Show existing
-        updated_ap = []
-        for i, e in enumerate(ap):
-            st.markdown(f"**Entry {i+1}**")
-            c1, c2, c3, c4 = st.columns([2, 3, 2, 1.5])
-            with c1:
-                deg = st.text_input("Degree", value=e.get("degree",""), key=f"ap_deg_{i}", placeholder="B.Tech CSE / Class XII")
-            with c2:
-                inst = st.text_input("Institution", value=e.get("institution",""), key=f"ap_inst_{i}", placeholder="IIT Bombay or DPS, City (CBSE)")
-            with c3:
-                score = st.text_input("Score", value=e.get("score",""), key=f"ap_score_{i}", placeholder="9.12/10.00 or 95.40%")
-            with c4:
-                year = st.text_input("Year", value=e.get("year",""), key=f"ap_year_{i}", placeholder="2018-22")
-            updated_ap.append({"degree": deg, "institution": inst, "score": score, "year": year})
-
-        # Add new entry
-        if st.button("+ Add qualification", key="add_ap"):
-            updated_ap.append({"degree": "", "institution": "", "score": "", "year": ""})
-        data["academic_profile"] = [e for e in updated_ap if e["degree"] or e["institution"]]
-
-    # ── Work experience ───────────────────────────────────────────────────────
-    with st.expander("💼 Work Experience"):
-        st.caption("Include full-time jobs and internships. Reverse chronological order.")
-        we = data.get("work_experience", [])
-        updated_we = []
-        for i, e in enumerate(we):
-            st.markdown(f"**{e.get('company', f'Entry {i+1}')}**")
-            c1, c2, c3 = st.columns([2, 3, 1.5])
-            with c1:
-                company = st.text_input("Company", value=e.get("company",""), key=f"we_co_{i}")
-            with c2:
-                role = st.text_input("Role / Designation", value=e.get("role",""), key=f"we_role_{i}", placeholder="Intern - Strategy, Growth")
-            with c3:
-                dur = st.text_input("Duration", value=e.get("duration",""), key=f"we_dur_{i}", placeholder="Jun'22-Aug'22")
-
-            resp_text = st.text_area("Responsibilities (one per line)", value="\n".join(e.get("responsibilities",[])), key=f"we_resp_{i}", height=80)
-            init_text = st.text_area("Initiatives (one per line)", value="\n".join(e.get("initiatives",[])), key=f"we_init_{i}", height=60)
-            ach_text  = st.text_area("Achievements (one per line)", value="\n".join(e.get("achievements",[])), key=f"we_ach_{i}", height=60)
-
-            updated_we.append({
-                "company": company, "role": role, "duration": dur,
-                "responsibilities": [l.strip() for l in resp_text.splitlines() if l.strip()],
-                "initiatives":      [l.strip() for l in init_text.splitlines() if l.strip()],
-                "achievements":     [l.strip() for l in ach_text.splitlines() if l.strip()],
-            })
-            st.divider()
-
-        if st.button("+ Add work experience", key="add_we"):
-            updated_we.append({"company":"","role":"","duration":"","responsibilities":[],"initiatives":[],"achievements":[]})
-        data["work_experience"] = [e for e in updated_we if e["company"]]
-
-    # ── Academic achievements ─────────────────────────────────────────────────
-    with st.expander("🏆 Academic Achievements"):
-        aa = data.get("academic_achievements", {"academic":[],"competitions":[],"scholarships":[]})
-        for cat in ("academic", "competitions", "scholarships"):
-            st.markdown(f"**{cat.title()}** (one per line, with year at end if desired)")
-            items = aa.get(cat, [])
-            existing = "\n".join(
-                f"{p.get('text','')} | {p.get('year','')}" if isinstance(p, dict) else str(p)
-                for p in items
-            )
-            new_text = st.text_area(f"{cat}", value=existing, key=f"aa_{cat}", height=80,
-                                    placeholder="Secured Rank 1 in JEE Advanced among 1,50,000 candidates | 2021")
-            parsed_items = []
-            for line in new_text.splitlines():
-                line = line.strip()
-                if not line: continue
-                if " | " in line:
-                    parts = line.rsplit(" | ", 1)
-                    parsed_items.append({"text": parts[0].strip(), "year": parts[1].strip()})
-                else:
-                    parsed_items.append({"text": line, "year": ""})
-            aa[cat] = parsed_items
-        data["academic_achievements"] = aa
-
-    # ── Positions of responsibility ──────────────────────────────────────────
-    with st.expander("👥 Positions of Responsibility"):
-        por = data.get("positions_of_responsibility", [])
-        updated_por = []
-        for i, e in enumerate(por):
-            st.markdown(f"**{e.get('organization', f'POR {i+1}')}**")
-            c1, c2, c3 = st.columns([2, 3, 1])
-            with c1:
-                org = st.text_input("Organization", value=e.get("organization",""), key=f"por_org_{i}")
-            with c2:
-                role = st.text_input("Role", value=e.get("role",""), key=f"por_role_{i}", placeholder="Vice President, Science Society")
-            with c3:
-                year = st.text_input("Year", value=str(e.get("year","")), key=f"por_year_{i}")
-            bullets_text = st.text_area("Bullets (one per line)", value="\n".join(e.get("bullets",[])), key=f"por_b_{i}", height=80)
-            updated_por.append({
-                "organization": org, "role": role, "year": year,
-                "bullets": [l.strip() for l in bullets_text.splitlines() if l.strip()]
-            })
-            st.divider()
-        if st.button("+ Add POR", key="add_por"):
-            updated_por.append({"organization":"","role":"","year":"","bullets":[]})
-        data["positions_of_responsibility"] = [e for e in updated_por if e["organization"]]
-
-    # ── CIP ──────────────────────────────────────────────────────────────────
-    with st.expander("📋 Certifications, Internships & Projects"):
-        cip = data.get("cip", {"certifications":[],"internships":[],"projects":[]})
-        for cat in ("certifications", "internships", "projects"):
-            st.markdown(f"**{cat.title()}**")
-            items = cip.get(cat, [])
-            updated = []
-            for i, e in enumerate(items):
-                c1, c2, c3 = st.columns([2, 3, 1.5])
-                with c1:
-                    org = st.text_input("Org/Platform", value=e.get("organization",""), key=f"cip_{cat}_org_{i}")
-                with c2:
-                    title = st.text_input("Title", value=e.get("title",""), key=f"cip_{cat}_title_{i}",
-                                          placeholder=f"{'Certification' if cat=='certifications' else 'Intern' if cat=='internships' else 'Project'} - Name, Dept")
-                with c3:
-                    dur = st.text_input("Duration", value=e.get("duration",""), key=f"cip_{cat}_dur_{i}")
-                bullets_text = st.text_area("Bullets", value="\n".join(e.get("bullets",[])), key=f"cip_{cat}_b_{i}", height=60)
-                updated.append({
-                    "organization": org, "title": title, "duration": dur,
-                    "bullets": [l.strip() for l in bullets_text.splitlines() if l.strip()]
-                })
-            if st.button(f"+ Add {cat[:-1]}", key=f"add_cip_{cat}"):
-                updated.append({"organization":"","title":"","duration":"","bullets":[]})
-            cip[cat] = [e for e in updated if e["organization"] or e["title"]]
-            st.divider()
-        data["cip"] = cip
-
-    # ── ECA ──────────────────────────────────────────────────────────────────
-    with st.expander("🏅 Extra-Curricular Activities"):
-        ECA_CATS = [
-            "Debate/ Public Speaking", "Sports / Adventure Sports", "Management",
-            "Cultural", "Art & Design", "Quizzing", "Social Service",
-            "Technical", "Literature", "Others",
-        ]
-        eca = data.get("eca", {})
-        updated_eca = {}
-
-        for cat in ECA_CATS:
-            items = eca.get(cat, [])
-            existing = "\n".join(
-                f"{p.get('text','')} | {p.get('year','')}" if isinstance(p, dict) else str(p)
-                for p in items
-            )
-            val = st.text_area(cat, value=existing, key=f"eca_{cat}", height=60,
-                               placeholder=("Hobbies: Reading, Volleyball, Chess" if cat == "Others"
-                                            else f"e.g. Secured Gold at Inter-College Meet | 2022"))
-            parsed = []
-            for line in val.splitlines():
-                line = line.strip()
-                if not line: continue
-                if " | " in line:
-                    parts = line.rsplit(" | ", 1)
-                    parsed.append({"text": parts[0].strip(), "year": parts[1].strip()})
-                else:
-                    parsed.append({"text": line, "year": ""})
-            if parsed:
-                updated_eca[cat] = parsed
-        data["eca"] = updated_eca
-
-    # ── Contact ──────────────────────────────────────────────────────────────
-    with st.expander("🔗 Contact & Links", expanded=not data.get("linkedin")):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            data["linkedin"] = st.text_input("LinkedIn URL", value=data.get("linkedin",""),
-                                              placeholder="https://linkedin.com/in/yourhandle")
-        with c2:
-            data["email"] = st.text_input("Email", value=data.get("email",""))
-        with c3:
-            data["phone"] = st.text_input("Phone", value=data.get("phone",""), placeholder="+91 XXXXXXXXXX")
-
-    # ── Validate & Generate ──────────────────────────────────────────────────
-    st.divider()
-
-    missing_now = find_missing_fields(data)
-    if missing_now:
-        items_str = "\n".join(f"• {q}" for _, q in missing_now)
-        st.warning(f"Still missing:\n{items_str}")
-
-    col_a, col_b = st.columns([1, 3])
-    with col_a:
+    # ── Generate button when done ─────────────────────────────────────────────
+    if st.session_state.chat_done:
+        st.divider()
         if st.button("✅ Generate My CV", type="primary", use_container_width=True):
-            st.session_state.cv_data = data
             st.session_state.stage = "download"
             st.rerun()
+        return
+
+    # ── Chat input ────────────────────────────────────────────────────────────
+    user_input = st.chat_input("Type your answer here...")
+    if not user_input:
+        return
+
+    # Show user message
+    st.session_state.chat_messages.append({"role": "user", "content": user_input})
+
+    # Process answer
+    queue = st.session_state.chat_queue
+    if not queue:
+        st.session_state.chat_done = True
+        st.rerun()
+        return
+
+    field_key, question = queue[0]
+
+    # Handle spike points choice
+    if field_key == "spike_points" and st.session_state.awaiting_spike_choice:
+        if user_input.strip().lower() in ("use these", "yes", "use", "accept", "ok", "okay"):
+            data["spike_points"] = st.session_state.spike_suggestions
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": f"✅ Got it! Using: **{' | '.join(data['spike_points'])}**"
+            })
+        else:
+            # User typed their own spikes
+            spikes = [s.strip() for s in user_input.splitlines() if s.strip()]
+            if len(spikes) < 4:
+                # Try comma-separated too
+                spikes = [s.strip() for s in user_input.split(",") if s.strip()]
+            data["spike_points"] = spikes[:4]
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": f"✅ Got it! Spike points: **{' | '.join(data['spike_points'])}**"
+            })
+        st.session_state.awaiting_spike_choice = False
+        queue.pop(0)
+    else:
+        # Normal answer
+        data = apply_chat_answer(field_key, user_input, data)
+        queue.pop(0)
+        st.session_state.chat_messages.append({"role": "assistant", "content": "✅ Got it!"})
+
+    st.session_state.cv_data = data
+    st.session_state.chat_queue = queue
+
+    # Ask next question
+    if queue:
+        next_key, next_q = queue[0]
+        if next_q == "SPIKE_GENERATION":
+            _ask_spike_question(data, api_key)
+        else:
+            st.session_state.chat_messages.append({"role": "assistant", "content": next_q})
+    else:
+        st.session_state.chat_done = True
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "content": "✅ All done! Click **Generate CV** below to get your standardized PDF and Word file."
+        })
+
+    st.rerun()
+
+
+def _ask_spike_question(data: dict, api_key: str):
+    """Generate spike suggestions and ask the spike question."""
+    with st.spinner("Analyzing your CV for spike points..."):
+        suggestions = suggest_spike_points(data, api_key)
+    st.session_state.spike_suggestions = suggestions
+
+    if suggestions:
+        msg = (
+            "Now for your **Spike Points** — 4 highlights shown in the header bar of your CV.\n\n"
+            "Based on your CV, here's what I'd suggest:\n\n"
+            + "\n".join(f"{i+1}. **{s}**" for i, s in enumerate(suggestions))
+            + "\n\n---\n"
+            "Type **'use these'** to accept them, or type your own 4 spike points (one per line).\n\n"
+            "💡 **Tip:** Manually written spike points almost always work better — "
+            "only you know which role you're targeting and what to highlight for it."
+        )
+        st.session_state.awaiting_spike_choice = True
+    else:
+        msg = (
+            "Now for your **Spike Points** — 4 highlights shown in the header bar of your CV.\n\n"
+            "These should be your 4 biggest achievements in 2-4 words each (Pascal Case).\n"
+            "Cover: Academics | Work | Positions | ECA/Skills\n\n"
+            "Example:\n`National Rank 2\nEx-Deloitte Analyst\nStudent Council VP\nState-Level Swimmer`\n\n"
+            "💡 Type one per line."
+        )
+        st.session_state.awaiting_spike_choice = False
+        # Update queue so it just accepts the typed answer directly
+    st.session_state.chat_messages.append({"role": "assistant", "content": msg})
 
 
 # ── STAGE 3: DOWNLOAD ─────────────────────────────────────────────────────────
@@ -669,7 +682,7 @@ def stage_download():
 
         st.markdown("")
         if st.button("✏️ Edit CV", use_container_width=True):
-            st.session_state.stage = "review"
+            st.session_state.stage = "chat"
             st.rerun()
 
     with col2:
@@ -703,8 +716,8 @@ def main():
 
     if st.session_state.stage == "upload":
         stage_upload()
-    elif st.session_state.stage == "review":
-        stage_review()
+    elif st.session_state.stage == "chat":
+        stage_chat()
     elif st.session_state.stage == "download":
         stage_download()
 
